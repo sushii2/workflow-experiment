@@ -1,9 +1,8 @@
 "use server";
 
 import { gateway } from "@ai-sdk/gateway";
-import { put } from "@vercel/blob";
 import { generateImage, generateText } from "ai";
-import { nanoid } from "nanoid";
+import { writeBlob } from "@/lib/blob";
 import { parseError } from "@/lib/error/parse";
 
 interface GenerateImageActionProps {
@@ -48,12 +47,11 @@ export const generateImageAction = async ({
       extension = "jpg";
     }
 
-    const name = `${nanoid()}.${extension}`;
-
-    const blob = await put(name, image.uint8Array.buffer as ArrayBuffer, {
-      access: "public",
-      contentType: image.mediaType,
-    });
+    const url = await writeBlob(
+      image.uint8Array,
+      extension ?? "png",
+      image.mediaType
+    );
 
     const { text: description } = await generateText({
       model: gateway("openai/gpt-5-nano"),
@@ -63,8 +61,9 @@ export const generateImageAction = async ({
           content: [
             { type: "text", text: "Describe this image." },
             {
-              type: "image",
-              image: blob.url,
+              type: "file",
+              data: image.uint8Array,
+              mediaType: image.mediaType,
             },
           ],
         },
@@ -76,7 +75,7 @@ export const generateImageAction = async ({
     }
 
     return {
-      url: blob.url,
+      url,
       type: image.mediaType,
       description,
     };

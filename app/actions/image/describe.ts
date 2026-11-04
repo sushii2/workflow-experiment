@@ -3,7 +3,7 @@
 import { gateway } from "@ai-sdk/gateway";
 import { generateText } from "ai";
 import { parseError } from "@/lib/error/parse";
-import { assertBlobUrl } from "@/lib/url";
+import { readBlob } from "@/lib/blob";
 
 export const describeAction = async (
   url: string
@@ -16,7 +16,7 @@ export const describeAction = async (
     }
 > => {
   try {
-    const validatedUrl = assertBlobUrl(url);
+    const image = await readBlob(url);
 
     const { text } = await generateText({
       model: gateway("openai/gpt-5-nano"),
@@ -26,8 +26,9 @@ export const describeAction = async (
           content: [
             { type: "text", text: "Describe this image." },
             {
-              type: "image",
-              image: validatedUrl.toString(),
+              type: "file",
+              data: image.data,
+              mediaType: image.mediaType,
             },
           ],
         },
