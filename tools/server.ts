@@ -5,9 +5,14 @@
 import type { ToolSet } from "ai";
 import { geocodeTool } from "./geocode/tool";
 import { placeTool } from "./place/tool";
+import { searchTool } from "./search/tool";
 import type { ServerToolDefinition, ToolNodeType } from "./types";
 
-const serverTools: ServerToolDefinition[] = [geocodeTool, placeTool];
+const serverTools: ServerToolDefinition[] = [
+  geocodeTool,
+  placeTool,
+  searchTool,
+];
 
 /**
  * Turns tool IDs sent by the client into an AI SDK `ToolSet`. Unknown IDs, and

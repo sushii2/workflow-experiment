@@ -151,49 +151,90 @@ export const fetchJson = async <T>(
 };
 
 interface ArcgisResponse<A> {
-  features?: { attributes: A }[];
+  features?: { attributes: A; geometry?: { rings?: [number, number][][] } }[];
+  count?: number;
+  exceededTransferLimit?: boolean;
   error?: { message?: string };
 }
 
-/**
- * Queries a public ArcGIS Feature/Map Server layer for features at a point,
- * or matching a where clause.
- */
-export const queryArcgisLayer = async <A>(
+/** Spatial filter for an ArcGIS query. */
+export type ArcgisGeometry =
+  | { kind: "point"; point: Point; distanceM?: number }
+  | { kind: "polygon"; rings: [number, number][][] };
+
+export interface ArcgisQuery {
+  label: string;
+  geometry?: ArcgisGeometry;
+  where?: string;
+  outFields?: string[];
+  orderBy?: string;
+  limit?: number;
+  retries?: number;
+  signal?: AbortSignal;
+}
+
+const runArcgisQuery = async <A>(
   layerUrl: string,
   {
     label,
-    point,
+    geometry,
     where,
     outFields,
+    orderBy,
+    limit,
     retries,
     signal,
-  }: {
-    label: string;
-    point?: Point;
-    where?: string;
-    outFields: string[];
-    retries?: number;
-    signal?: AbortSignal;
-  }
-): Promise<A[]> => {
+  }: ArcgisQuery,
+  extra: Record<string, string>
+) => {
   const params = new URLSearchParams({
     f: "json",
-    outFields: outFields.join(","),
-    returnGeometry: "false",
     where: where ?? "1=1",
+    returnGeometry: "false",
+    ...extra,
   });
 
-  if (point) {
-    params.set("geometry", `${point.longitude},${point.latitude}`);
-    params.set("geometryType", "esriGeometryPoint");
-    params.set("inSR", "4326");
-    params.set("spatialRel", "esriSpatialRelIntersects");
+  if (outFields) {
+    params.set("outFields", outFields.join(","));
   }
 
+  if (orderBy) {
+    params.set("orderByFields", orderBy);
+  }
+
+  if (limit) {
+    params.set("resultRecordCount", String(limit));
+  }
+
+  if (geometry) {
+    params.set("inSR", "4326");
+    params.set("spatialRel", "esriSpatialRelIntersects");
+
+    if (geometry.kind === "point") {
+      params.set(
+        "geometry",
+        `${geometry.point.longitude},${geometry.point.latitude}`
+      );
+      params.set("geometryType", "esriGeometryPoint");
+
+      if (geometry.distanceM) {
+        params.set("distance", String(geometry.distanceM));
+        params.set("units", "esriSRUnit_Meter");
+      }
+    } else {
+      params.set("geometry", JSON.stringify({ rings: geometry.rings }));
+      params.set("geometryType", "esriGeometryPolygon");
+    }
+  }
+
+  // Polygons don't fit in a URL; ArcGIS accepts the same form as a POST body.
   const body = await fetchJson<ArcgisResponse<A>>(
-    `${layerUrl}/query?${params}`,
-    { label, retries, signal }
+    geometry?.kind === "polygon"
+      ? `${layerUrl}/query`
+      : `${layerUrl}/query?${params}`,
+    geometry?.kind === "polygon"
+      ? { label, retries, signal, method: "POST", body: params }
+      : { label, retries, signal }
   );
 
   if (body.error) {
@@ -202,7 +243,49 @@ export const queryArcgisLayer = async <A>(
     );
   }
 
+  return body;
+};
+
+/**
+ * Queries a public ArcGIS Feature/Map Server layer. Note: some big layers
+ * (FEMA USA Structures) only answer area queries quickly with a `where` filter.
+ */
+export const queryArcgisLayer = async <A>(
+  layerUrl: string,
+  query: ArcgisQuery
+): Promise<A[]> => {
+  const body = await runArcgisQuery<A>(layerUrl, query, {});
   return (body.features ?? []).map((feature) => feature.attributes);
+};
+
+/**
+ * Like queryArcgisLayer, but also returns each feature's polygon rings in
+ * WGS84 (for polygon layers).
+ */
+export const queryArcgisFeatures = async <A>(
+  layerUrl: string,
+  query: ArcgisQuery
+): Promise<{ attributes: A; rings?: [number, number][][] }[]> => {
+  const body = await runArcgisQuery<A>(layerUrl, query, {
+    returnGeometry: "true",
+    outSR: "4326",
+    geometryPrecision: "6",
+  });
+  return (body.features ?? []).map((feature) => ({
+    attributes: feature.attributes,
+    rings: feature.geometry?.rings,
+  }));
+};
+
+/** Number of features matching a query. */
+export const countArcgisLayer = async (
+  layerUrl: string,
+  query: Omit<ArcgisQuery, "outFields" | "orderBy" | "limit">
+): Promise<number> => {
+  const body = await runArcgisQuery(layerUrl, query, {
+    returnCountOnly: "true",
+  });
+  return body.count ?? 0;
 };
 
 /** Great-circle distance in metres. */

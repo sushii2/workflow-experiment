@@ -10,11 +10,12 @@
  */
 import { geocodeMeta } from "./geocode/meta";
 import { placeMeta } from "./place/meta";
+import { searchMeta } from "./search/meta";
 import type { ToolMeta, ToolNodeType } from "./types";
 
 export type { ToolMeta, ToolNodeType } from "./types";
 
-export const toolList: ToolMeta[] = [geocodeMeta, placeMeta];
+export const toolList: ToolMeta[] = [geocodeMeta, placeMeta, searchMeta];
 
 export const getToolsForNodeType = (nodeType: ToolNodeType): ToolMeta[] =>
   toolList.filter((tool) => tool.nodeTypes.includes(nodeType));
