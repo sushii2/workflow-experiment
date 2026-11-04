@@ -26,7 +26,9 @@ import { download } from "@/lib/download";
 import { handleError } from "@/lib/error/handle";
 import { getImagesFromImageNodes, getTextFromTextNodes } from "@/lib/xyflow";
 import { useGateway } from "@/providers/gateway/client";
+import { getToolsForNodeType } from "@/tools";
 import { ModelSelector } from "../model-selector";
+import { ToolSelector } from "../tool-selector";
 import type { ImageNodeProps } from ".";
 
 type ImageTransformProps = ImageNodeProps & {
@@ -161,6 +163,21 @@ export const ImageTransform = ({
       },
     ];
 
+    // Hidden until a tool in /tools declares support for image nodes. When one
+    // does, pass data.tools to the image generation action as well.
+    if (getToolsForNodeType("image").length) {
+      items.push({
+        tooltip: "Tools",
+        children: (
+          <ToolSelector
+            nodeType="image"
+            onChange={(value) => updateNodeData(id, { tools: value })}
+            value={data.tools ?? []}
+          />
+        ),
+      });
+    }
+
     items.push(
       loading
         ? {
@@ -228,6 +245,7 @@ export const ImageTransform = ({
     updateNodeData,
     loading,
     data.generated,
+    data.tools,
     data.updatedAt,
     handleGenerate,
   ]);

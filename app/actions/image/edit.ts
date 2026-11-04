@@ -1,11 +1,9 @@
 "use server";
 
 import { gateway } from "@ai-sdk/gateway";
-import { head, put } from "@vercel/blob";
 import { generateImage } from "ai";
-import { nanoid } from "nanoid";
+import { readBlob, writeBlob } from "@/lib/blob";
 import { parseError } from "@/lib/error/parse";
-import { assertBlobUrl } from "@/lib/url";
 
 interface EditImageActionProps {
   images: {
@@ -40,14 +38,7 @@ export const editImageAction = async ({
       !instructions || instructions === "" ? defaultPrompt : instructions;
 
     const imageData = await Promise.all(
-      images.map(async (img) => {
-        assertBlobUrl(img.url);
-
-        const blob = await head(img.url);
-        const response = await fetch(blob.downloadUrl);
-        const buffer = await response.arrayBuffer();
-        return new Uint8Array(buffer);
-      })
+      images.map(async (img) => (await readBlob(img.url)).data)
     );
 
     const result = await generateImage({
@@ -60,17 +51,10 @@ export const editImageAction = async ({
 
     const { image } = result;
 
-    const blob = await put(
-      `${nanoid()}.png`,
-      Buffer.from(image.base64, "base64"),
-      {
-        access: "public",
-        contentType: "image/png",
-      }
-    );
+    const url = await writeBlob(image.uint8Array, "png", "image/png");
 
     return {
-      url: blob.url,
+      url,
       type: "image/png",
       description: instructions ?? defaultPrompt,
     };

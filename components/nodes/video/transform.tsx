@@ -18,7 +18,9 @@ import { download } from "@/lib/download";
 import { handleError } from "@/lib/error/handle";
 import { getImagesFromImageNodes, getTextFromTextNodes } from "@/lib/xyflow";
 import { useGateway } from "@/providers/gateway/client";
+import { getToolsForNodeType } from "@/tools";
 import { ModelSelector } from "../model-selector";
+import { ToolSelector } from "../tool-selector";
 import type { VideoNodeProps } from ".";
 
 type VideoTransformProps = VideoNodeProps & {
@@ -143,6 +145,21 @@ export const VideoTransform = ({
           ),
         },
   ];
+
+  // Hidden until a tool in /tools declares support for video nodes. When one
+  // does, pass data.tools to the video generation action as well.
+  if (getToolsForNodeType("video").length) {
+    toolbar.push({
+      tooltip: "Tools",
+      children: (
+        <ToolSelector
+          nodeType="video"
+          onChange={(value) => updateNodeData(id, { tools: value })}
+          value={data.tools ?? []}
+        />
+      ),
+    });
+  }
 
   if (data.generated?.url) {
     toolbar.push({

@@ -12,6 +12,8 @@ export interface TextNodeProps {
     model?: string;
     updatedAt?: string;
     instructions?: string;
+    // IDs of attached tools (see /tools)
+    tools?: string[];
 
     // Tiptap generated JSON content
     content?: JSONContent;

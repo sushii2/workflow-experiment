@@ -16,6 +16,8 @@ export interface VideoNodeProps {
     updatedAt?: string;
     model?: string;
     instructions?: string;
+    // IDs of attached tools (see /tools)
+    tools?: string[];
     width?: number;
     height?: number;
   };
