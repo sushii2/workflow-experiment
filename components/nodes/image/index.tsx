@@ -19,6 +19,8 @@ export interface ImageNodeProps {
     model?: string;
     description?: string;
     instructions?: string;
+    // IDs of attached tools (see /tools)
+    tools?: string[];
   };
   id: string;
 }

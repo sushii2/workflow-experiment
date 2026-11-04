@@ -1,9 +1,18 @@
 import { useChat } from "@ai-sdk/react";
 import { getIncomers, useReactFlow } from "@xyflow/react";
-import { DefaultChatTransport, type FileUIPart } from "ai";
 import {
+  DefaultChatTransport,
+  type FileUIPart,
+  getToolName,
+  isToolUIPart,
+  type UIMessage,
+} from "ai";
+import {
+  CheckIcon,
   ClockIcon,
   CopyIcon,
+  Loader2Icon,
+  TriangleAlertIcon,
   PlayIcon,
   RotateCcwIcon,
   SquareIcon,
@@ -42,11 +51,71 @@ import {
 } from "@/lib/xyflow";
 import { useGateway } from "@/providers/gateway/client";
 import { ReasoningTunnel } from "@/tunnels/reasoning";
+import { getToolMeta } from "@/tools";
 import { ModelSelector } from "../model-selector";
+import { ToolSelector } from "../tool-selector";
 import type { TextNodeProps } from ".";
 
 type TextTransformProps = TextNodeProps & {
   title: string;
+};
+
+// With tools, the model can write text in several steps (before and after
+// tool calls), so combine every text part rather than taking the first.
+const getMessageText = (message: UIMessage) =>
+  message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join("\n\n");
+
+const ToolActivity = ({ message }: { message: UIMessage }) => {
+  const toolParts = message.parts.filter(isToolUIPart);
+
+  if (!toolParts.length) {
+    return null;
+  }
+
+  return (
+    <div className="mb-2 flex flex-wrap gap-1">
+      {toolParts.map((part) => {
+        const name = getToolName(part);
+        const meta = getToolMeta(name);
+        const Icon = meta?.icon;
+        const input = part.input as { address?: string } | undefined;
+        let StatusIcon = Loader2Icon;
+
+        if (part.state === "output-available") {
+          StatusIcon = CheckIcon;
+        } else if (part.state === "output-error") {
+          StatusIcon = TriangleAlertIcon;
+        }
+
+        return (
+          <span
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-background px-2 py-0.5 text-muted-foreground text-xs"
+            key={part.toolCallId}
+            title={part.state === "output-error" ? part.errorText : undefined}
+          >
+            {Icon ? <Icon size={12} /> : null}
+            <span className="truncate">
+              {meta?.label ?? name}
+              {input?.address ? `: ${input.address}` : ""}
+            </span>
+            <StatusIcon
+              className={
+                part.state === "output-available" ||
+                part.state === "output-error"
+                  ? ""
+                  : "animate-spin"
+              }
+              size={12}
+            />
+          </span>
+        );
+      })}
+    </div>
+  );
 };
 
 const getDefaultModel = (models: ReturnType<typeof useGateway>["models"]) => {
@@ -85,7 +154,7 @@ export const TextTransform = ({
 
       updateNodeData(id, {
         generated: {
-          text: message.parts.find((part) => part.type === "text")?.text ?? "",
+          text: getMessageText(message),
           sources:
             message.parts?.filter((part) => part.type === "source-url") ?? [],
         },
@@ -153,12 +222,14 @@ export const TextTransform = ({
       {
         body: {
           modelId,
+          tools: data.tools ?? [],
         },
       }
     );
   }, [
     sendMessage,
     data.instructions,
+    data.tools,
     getEdges,
     getNodes,
     id,
@@ -192,6 +263,17 @@ export const TextTransform = ({
       ),
     });
 
+    items.push({
+      tooltip: "Tools",
+      children: (
+        <ToolSelector
+          nodeType="text"
+          onChange={(value) => updateNodeData(id, { tools: value })}
+          value={data.tools ?? []}
+        />
+      ),
+    });
+
     if (status === "submitted" || status === "streaming") {
       items.push({
         tooltip: "Stop",
@@ -205,10 +287,7 @@ export const TextTransform = ({
       const text = messages.length
         ? messages
             .filter((message) => message.role === "assistant")
-            .map(
-              (message) =>
-                message.parts.find((part) => part.type === "text")?.text ?? ""
-            )
+            .map(getMessageText)
             .join("\n")
         : data.generated?.text;
 
@@ -262,6 +341,7 @@ export const TextTransform = ({
     return items;
   }, [
     data.generated?.text,
+    data.tools,
     data.updatedAt,
     handleGenerate,
     updateNodeData,
@@ -344,11 +424,9 @@ export const TextTransform = ({
                     </SourcesContent>
                   </Sources>
                 )}
+                <ToolActivity message={message} />
                 <MessageContent className="bg-transparent p-0">
-                  <MessageResponse>
-                    {message.parts.find((part) => part.type === "text")?.text ??
-                      ""}
-                  </MessageResponse>
+                  <MessageResponse>{getMessageText(message)}</MessageResponse>
                 </MessageContent>
               </div>
             </Message>
