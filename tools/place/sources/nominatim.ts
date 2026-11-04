@@ -2,6 +2,7 @@
 // Public instance policy: at most 1 request/second, no bulk use.
 // https://operations.osmfoundation.org/policies/nominatim/
 
+import type { BBox, Rings } from "../lib/geo";
 import { fetchJson, sleep } from "../lib/http";
 import type { Point } from "../types";
 
@@ -103,6 +104,88 @@ export const searchAddress = async (
   );
 
   return toPlace(results[0]);
+};
+
+/** Nominatim returns at most this many results per search. */
+export const NOMINATIM_MAX_RESULTS = 50;
+
+/**
+ * Features matching `query` inside a box. Use "[key=value]" to search an OSM
+ * tag (e.g. "[amenity=cafe]") or plain text to match names. Returns at most
+ * 50; `capped` says whether there may be more.
+ */
+export const searchInBox = async (
+  query: string,
+  bbox: BBox,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<{ places: OsmPlace[]; capped: boolean }> => {
+  const results = await request<NominatimPlace[]>(
+    "/search",
+    {
+      q: query,
+      limit: String(NOMINATIM_MAX_RESULTS),
+      bounded: "1",
+      viewbox: `${bbox.west},${bbox.north},${bbox.east},${bbox.south}`,
+    },
+    signal
+  );
+
+  return {
+    places: results.flatMap((result) => toPlace(result) ?? []),
+    capped: results.length >= NOMINATIM_MAX_RESULTS,
+  };
+};
+
+export interface OsmArea extends OsmPlace {
+  bbox: BBox;
+  /** Boundary rings, simplified (~500 m tolerance). Absent for point features. */
+  rings?: Rings;
+}
+
+interface NominatimAreaResult extends NominatimPlace {
+  boundingbox?: [string, string, string, string];
+  geojson?:
+    | { type: "Polygon"; coordinates: Rings }
+    | { type: "MultiPolygon"; coordinates: Rings[] }
+    | { type: string; coordinates: unknown };
+}
+
+/** A named US area (city, county, neighbourhood…) and its boundary. */
+export const lookupArea = async (
+  name: string,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<OsmArea | null> => {
+  const [result] = await request<NominatimAreaResult[]>(
+    "/search",
+    {
+      q: name,
+      limit: "1",
+      countrycodes: "us",
+      polygon_geojson: "1",
+      // Simplify the outline to keep it small enough to send to ArcGIS.
+      polygon_threshold: "0.005",
+    },
+    signal
+  );
+
+  const place = toPlace(result);
+  const box = result?.boundingbox?.map(Number);
+
+  if (!(place && box?.every(Number.isFinite))) {
+    return null;
+  }
+
+  const [south, north, west, east] = box;
+  const { geojson } = result;
+  let rings: Rings | undefined;
+
+  if (geojson?.type === "Polygon") {
+    rings = geojson.coordinates as Rings;
+  } else if (geojson?.type === "MultiPolygon") {
+    rings = (geojson.coordinates as Rings[]).flat();
+  }
+
+  return { ...place, bbox: { west, south, east, north }, rings };
 };
 
 /** The mapped feature (building, business, road…) at or nearest a point. */

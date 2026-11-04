@@ -1,7 +1,13 @@
 // FEMA public ArcGIS services (no key): flood zones, the National Risk Index
 // and USA Structures building footprints.
 
-import { queryArcgisLayer } from "../lib/http";
+import { interiorPoint } from "../lib/geo";
+import {
+  type ArcgisGeometry,
+  countArcgisLayer,
+  queryArcgisFeatures,
+  queryArcgisLayer,
+} from "../lib/http";
 import type { Point } from "../types";
 
 export const NFHL_FLOOD_ZONES_URL =
@@ -40,7 +46,7 @@ export const fetchFloodZone = async (
     NFHL_FLOOD_ZONES_URL,
     {
       label: "FEMA flood map",
-      point,
+      geometry: { kind: "point", point },
       // hazards.fema.gov drops roughly half of TLS handshakes; attempts are
       // cheap (~0.3 s), so retry harder than other sources.
       retries: 4,
@@ -124,7 +130,7 @@ export const fetchNationalRiskIndex = async (
 
   const [attributes] = await queryArcgisLayer<NriAttributes>(NRI_TRACTS_URL, {
     label: "FEMA National Risk Index",
-    point: byTract ? undefined : point,
+    geometry: byTract ? undefined : { kind: "point", point },
     where: byTract ? `TRACTFIPS='${censusTract}'` : undefined,
     outFields: [
       "TRACTFIPS",
@@ -207,7 +213,7 @@ export const fetchStructureAt = async (
     USA_STRUCTURES_URL,
     {
       label: "FEMA USA Structures",
-      point,
+      geometry: { kind: "point", point },
       outFields: [
         "OCC_CLS",
         "PRIM_OCC",
@@ -235,4 +241,205 @@ export const fetchStructureAt = async (
       ? new Date(attributes.IMAGE_DATE).toISOString().slice(0, 10)
       : undefined,
   };
+};
+
+// ---- USA Structures search (by use and size, within an area) ----
+
+/**
+ * FEMA occupancy classes and subtypes, as "Class" or "Class / Subtype".
+ * Values are the layer's own (seen in Dallas County). There's no "warehouse"
+ * class: warehouses are usually Industrial / Light or Commercial / Wholesale Trade.
+ */
+const BUILDING_USE_VALUES = {
+  Agriculture: ["Agriculture", null],
+  Assembly: ["Assembly", null],
+  "Assembly / Community Center": ["Assembly", "Community Center"],
+  "Assembly / Convention Center": ["Assembly", "Convention Center"],
+  "Assembly / Indoor Arena": ["Assembly", "Indoor Arena"],
+  "Assembly / Religious": ["Assembly", "Religious"],
+  Commercial: ["Commercial", null],
+  "Commercial / Entertainment and Recreation": [
+    "Commercial",
+    "Entertainment and Recreation",
+  ],
+  "Commercial / Hospital": ["Commercial", "Hospital"],
+  "Commercial / Medical Office/Clinic": ["Commercial", "Medical Office/Clinic"],
+  "Commercial / Parking": ["Commercial", "Parking"],
+  "Commercial / Personal and Repair Services": [
+    "Commercial",
+    "Personal and Repair Services",
+  ],
+  "Commercial / Professional/Technical Services": [
+    "Commercial",
+    "Professional/Technical Services",
+  ],
+  "Commercial / Retail Trade": ["Commercial", "Retail Trade"],
+  "Commercial / Theaters": ["Commercial", "Theaters"],
+  "Commercial / Veterinary/Pet": ["Commercial", "Veterinary/Pet "],
+  "Commercial / Wholesale Trade": ["Commercial", "Wholesale Trade"],
+  Education: ["Education", null],
+  "Education / Colleges/Universities": ["Education", "Colleges/Universities"],
+  "Education / Pre-K - 12 Schools": ["Education", "Pre-K - 12 Schools"],
+  "Education / Other Educational Buildings": [
+    "Education",
+    "Other Educational Buildings",
+  ],
+  Government: ["Government", null],
+  "Government / Emergency Response": ["Government", "Emergency Response"],
+  "Government / General Services": ["Government", "General Services"],
+  "Government / Non-Civilian Structures": [
+    "Government",
+    "Non-Civilian Structures",
+  ],
+  Industrial: ["Industrial", null],
+  "Industrial / Food/Drugs/Chemicals": ["Industrial", "Food/Drugs/Chemicals"],
+  "Industrial / Heavy": ["Industrial", "Heavy"],
+  "Industrial / Light": ["Industrial", "Light"],
+  "Industrial / Metals/Minerals Processing": [
+    "Industrial",
+    "Metals/Minerals Processing",
+  ],
+  Residential: ["Residential", null],
+  "Residential / Institutional Dormitory": [
+    "Residential",
+    "Institutional Dormitory",
+  ],
+  "Residential / Manufactured Home": ["Residential", "Manufactured Home"],
+  "Residential / Multi - Family Dwelling": [
+    "Residential",
+    "Multi - Family Dwelling",
+  ],
+  "Residential / Nursing Home": ["Residential", "Nursing Home"],
+  "Residential / Single Family Dwelling": [
+    "Residential",
+    "Single Family Dwelling",
+  ],
+  "Residential / Temporary Lodging": ["Residential", "Temporary Lodging"],
+  "Utility and Misc": ["Utility and Misc", null],
+  "Utility and Misc / Aviation": ["Utility and Misc", "Aviation"],
+  "Utility and Misc / Energy Control Monitoring": [
+    "Utility and Misc",
+    "Energy Control Monitoring",
+  ],
+  "Utility and Misc / Ground": ["Utility and Misc", "Ground"],
+} as const satisfies Record<string, readonly [string, string | null]>;
+
+export type BuildingUse = keyof typeof BUILDING_USE_VALUES;
+
+export const BUILDING_USES = Object.keys(BUILDING_USE_VALUES) as [
+  BuildingUse,
+  ...BuildingUse[],
+];
+
+const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+const useClause = (use: BuildingUse) => {
+  const [occupancyClass, subtype] = BUILDING_USE_VALUES[use];
+  const classClause = `OCC_CLS=${sqlString(occupancyClass)}`;
+  return subtype
+    ? `(${classClause} AND PRIM_OCC=${sqlString(subtype)})`
+    : classClause;
+};
+
+export interface StructureMatch extends Point {
+  use: string;
+  footprintSqft?: number;
+  address?: string;
+}
+
+interface StructureSearchAttributes {
+  OCC_CLS: string | null;
+  PRIM_OCC: string | null;
+  SQFEET: number | null;
+  PROP_ADDR: string | null;
+  PROP_CITY: string | null;
+  PROP_ST: string | null;
+  PROP_ZIP: string | null;
+  LATITUDE: number | null;
+  LONGITUDE: number | null;
+}
+
+/**
+ * Buildings of the given uses and footprint size inside an area, largest
+ * first, plus the total match count. Needs at least one filter: this layer
+ * only answers area queries quickly when they're filtered.
+ */
+export const searchStructures = async (
+  {
+    geometry,
+    uses,
+    minSqft,
+    maxSqft,
+    limit,
+  }: {
+    geometry: ArcgisGeometry;
+    uses: readonly BuildingUse[];
+    minSqft?: number;
+    maxSqft?: number;
+    limit: number;
+  },
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<{ matches: StructureMatch[]; total: number }> => {
+  const clauses = [
+    uses.length ? `(${uses.map(useClause).join(" OR ")})` : undefined,
+    minSqft === undefined ? undefined : `SQFEET>=${Math.floor(minSqft)}`,
+    maxSqft === undefined ? undefined : `SQFEET<=${Math.ceil(maxSqft)}`,
+  ].filter(Boolean);
+
+  if (clauses.length === 0) {
+    throw new Error("Building search needs a use or size filter");
+  }
+
+  const query = {
+    label: "FEMA USA Structures",
+    geometry,
+    where: clauses.join(" AND "),
+    signal,
+  };
+
+  const [rows, total] = await Promise.all([
+    queryArcgisFeatures<StructureSearchAttributes>(USA_STRUCTURES_URL, {
+      ...query,
+      outFields: [
+        "OCC_CLS",
+        "PRIM_OCC",
+        "SQFEET",
+        "PROP_ADDR",
+        "PROP_CITY",
+        "PROP_ST",
+        "PROP_ZIP",
+        "LATITUDE",
+        "LONGITUDE",
+      ],
+      orderBy: "SQFEET DESC",
+      limit,
+    }),
+    countArcgisLayer(USA_STRUCTURES_URL, query),
+  ]);
+
+  const matches = rows.flatMap(({ attributes: row, rings }) => {
+    if (row.LATITUDE === null || row.LONGITUDE === null) {
+      return [];
+    }
+
+    // FEMA's LATITUDE/LONGITUDE is the centroid, which can sit outside
+    // courtyard or L-shaped buildings; report a point that's inside.
+    const centroid = { latitude: row.LATITUDE, longitude: row.LONGITUDE };
+    const point = rings?.length ? interiorPoint(rings, centroid) : centroid;
+
+    return [
+      {
+        use: [row.OCC_CLS, row.PRIM_OCC?.trim()].filter(Boolean).join(" / "),
+        footprintSqft: row.SQFEET === null ? undefined : Math.round(row.SQFEET),
+        address:
+          [row.PROP_ADDR, row.PROP_CITY, row.PROP_ST, row.PROP_ZIP]
+            .filter(Boolean)
+            .join(", ") || undefined,
+        latitude: point.latitude,
+        longitude: point.longitude,
+      },
+    ];
+  });
+
+  return { matches, total };
 };
