@@ -9,11 +9,12 @@
  *   2. Register the meta below and the tool in `tools/server.ts`.
  */
 import { geocodeMeta } from "./geocode/meta";
+import { placeMeta } from "./place/meta";
 import type { ToolMeta, ToolNodeType } from "./types";
 
 export type { ToolMeta, ToolNodeType } from "./types";
 
-export const toolList: ToolMeta[] = [geocodeMeta];
+export const toolList: ToolMeta[] = [geocodeMeta, placeMeta];
 
 export const getToolsForNodeType = (nodeType: ToolNodeType): ToolMeta[] =>
   toolList.filter((tool) => tool.nodeTypes.includes(nodeType));
